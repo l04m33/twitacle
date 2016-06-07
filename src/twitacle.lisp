@@ -3,8 +3,8 @@
 
 (defparameter *resource-base-url*  "https://api.twitter.com/1.1/")
 
-(defparameter *tweet-count* 10)
-(defparameter *refresh-interval* 10)    ; in seconds
+(defparameter *tweet-count* 20)
+(defparameter *refresh-interval* 20)  ; in seconds
 
 
 (defun login (session)
@@ -46,6 +46,7 @@
       (list session search-resp query upper-id lower-id clarifai-session))
     #'handle-search-result))
 
+
 (defun analyze-tweet (tweet session clarifai-session)
   (let ((image-links (extract-image-links tweet))
         (tweet-id (oauth/util:get-alist-value :id tweet)))
@@ -59,8 +60,7 @@
                                   :method :post)))
             (if (= (nth 0 rt-ret) 200)
               (format t "Retweeted ~A~%" tweet-id)
-              (format t "Retweet failed: ~A~%" (nth 1 rt-ret)))))
-        ))))
+              (format t "Retweet failed: ~A~%" (nth 1 rt-ret)))))))))
 
 
 (defun handle-search-result (ret)
@@ -86,9 +86,12 @@
          (when (> (length statuses) 0)
            (format t "--------------------------------~%")
            (loop for s in statuses
-                 when (and (not (oauth::get-alist-value :retweeted s))
-                           (string/= (subseq (oauth::get-alist-value :text s) 0 2) "RT"))
-                 do (format t "tweet: ~A~%" (oauth::get-alist-value :text s))
+                 when (and (not (oauth/util:get-alist-value :retweeted s))
+                           (not (oauth/util:get-alist-value :retweeted--status s))
+                           ;(string/= (subseq (oauth/util:get-alist-value :text s) 0 2) "RT")
+                           (or (> (oauth/util:get-alist-value :favorite--count s) 1)
+                               (> (oauth/util:get-alist-value :retweet--count s) 1)))
+                 do (format t "tweet: ~A~%" (oauth/util:get-alist-value :text s))
                     (analyze-tweet s session clarifai-session)
                  end)
            (format t "--------------------------------~%"))
@@ -130,9 +133,6 @@
     (loop for m in media
           when (string= (oauth::get-alist-value :type m) "photo")
           collect (oauth::get-alist-value :media--url m))))
-
-
-
 
 
 (defun main (consumer-key
