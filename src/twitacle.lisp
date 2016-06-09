@@ -43,7 +43,7 @@
                                  "search/tweets.json"
                                  :method :get
                                  :params (cons `("q" . ,query) params))))
-      (list session search-resp query upper-id lower-id clarifai-session))
+      (list session search-resp query upper-id lower-id clarifai-session params))
     #'handle-search-result))
 
 
@@ -69,7 +69,8 @@
         (query (nth 2 ret))
         (upper-id (nth 3 ret))
         (lower-id (nth 4 ret))
-        (clarifai-session (nth 5 ret)))
+        (clarifai-session (nth 5 ret))
+        (last-params (nth 6 ret)))
     (case (nth 0 search-resp)
       (200
        (let* ((resp-body (nth 1 search-resp))
@@ -125,7 +126,15 @@
                                    clarifai-session))
                     :time 0)))))
       (t
-        (format t "Search API call failed: ~A~%" search-resp)))))
+        (format t "Search API call failed: ~A~%" search-resp)
+        (delay #'(lambda ()
+                   (do-search session
+                              last-params
+                              query
+                              upper-id
+                              lower-id
+                              clarifai-session))
+               :time (* 2 *refresh-interval*))))))
 
 
 (defun extract-image-links (tweet)
