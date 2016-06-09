@@ -38,13 +38,29 @@
   (format t "================================~%")
   (format t "params = ~A~%" params)
   (format t "upper-id = ~A, lower-id = ~A~%" upper-id lower-id)
-  (attach
-    (alet ((search-resp (request session
-                                 "search/tweets.json"
-                                 :method :get
-                                 :params (cons `("q" . ,query) params))))
-      (list session search-resp query upper-id lower-id clarifai-session params))
-    #'handle-search-result))
+  (let* ((search-request-promise
+           (alet ((search-resp (request session
+                                        "search/tweets.json"
+                                        :method :get
+                                        :params (cons `("q" . ,query) params))))
+             (list session search-resp query upper-id lower-id clarifai-session params)))
+         (result-handled-promise (attach search-request-promise #'handle-search-result))
+         (catcher-promise (catcher result-handled-promise
+                            (t (e)
+                              (format t "Search operation failed: ~A~%" e)
+                              (list (* 2 *refresh-interval*)
+                                    session
+                                    params
+                                    query
+                                    upper-id
+                                    lower-id
+                                    clarifai-session)))))
+    (attach catcher-promise #'schedule-do-search)))
+
+
+(defun schedule-do-search (r)
+  (delay #'(lambda () (apply #'do-search (cdr r)))
+         :time (car r)))
 
 
 (defun analyze-tweet (tweet session clarifai-session)
@@ -52,15 +68,17 @@
         (tweet-id (oauth/util:get-alist-value :id tweet)))
     (format t "  image links: ~A~%" image-links)
     (when image-links
-      (alet ((tags (clarifai:get-tags clarifai-session (nth 0 image-links))))
-        (format t "Clarifai tags for tweet ~A: ~A~%" tweet-id tags)
-        (when (find "cat" tags :test #'equal)
-          (alet ((rt-ret (request session
-                                  (format nil "statuses/retweet/~A.json" tweet-id)
-                                  :method :post)))
-            (if (= (nth 0 rt-ret) 200)
-              (format t "Retweeted ~A~%" tweet-id)
-              (format t "Retweet failed: ~A~%" (nth 1 rt-ret)))))))))
+      (catcher (alet ((tags (clarifai:get-tags clarifai-session (nth 0 image-links))))
+                 (format t "Clarifai tags for tweet ~A: ~A~%" tweet-id tags)
+                 (when (find "cat" tags :test #'equal)
+                   (alet ((rt-ret (request session
+                                           (format nil "statuses/retweet/~A.json" tweet-id)
+                                           :method :post)))
+                     (if (= (nth 0 rt-ret) 200)
+                       (format t "Retweeted ~A~%" tweet-id)
+                       (format t "Retweet failed: ~A~%" (nth 1 rt-ret))))))
+        (t (e)
+          (format t "Tweet analysis failed: ~A~%" e))))))
 
 
 (defun handle-search-result (ret)
@@ -97,44 +115,43 @@
                  end)
            (format t "--------------------------------~%"))
 
+         (format t "cl-async stats: ~A~%" (stats))
+
          (if (or (< (length statuses) *tweet-count*) (not lower-id))
            (let* ((new-upper-id (or upper-id max-id))
                   (search-params `(("since_id" . ,new-upper-id)
                                    ("count" . ,*tweet-count*)
                                    ("result_type" . "recent"))))
              (format t "next search params: ~A~%" search-params)
-             (delay #'(lambda ()
-                        (do-search session
-                                   search-params
-                                   query
-                                   nil
-                                   new-upper-id
-                                   clarifai-session))
-                    :time *refresh-interval*))
+             (list *refresh-interval*
+                   session
+                   search-params
+                   query
+                   nil
+                   new-upper-id
+                   clarifai-session))
            (let ((new-upper-id (or upper-id max-id))
                  (search-params `(("since_id" . ,lower-id)
                                   ("max_id" . ,(1- cur-min-id))
                                   ("count" . ,*tweet-count*)
                                   ("result_type" . "recent"))))
              (format t "next search params: ~A~%" search-params)
-             (delay #'(lambda ()
-                        (do-search session
-                                   search-params
-                                   query
-                                   new-upper-id
-                                   lower-id
-                                   clarifai-session))
-                    :time 0)))))
+             (list 0
+                   session
+                   search-params
+                   query
+                   new-upper-id
+                   lower-id
+                   clarifai-session)))))
       (t
         (format t "Search API call failed: ~A~%" search-resp)
-        (delay #'(lambda ()
-                   (do-search session
-                              last-params
-                              query
-                              upper-id
-                              lower-id
-                              clarifai-session))
-               :time (* 2 *refresh-interval*))))))
+        (list (* 2 *refresh-interval*)
+              session
+              last-params
+              query
+              upper-id
+              lower-id
+              clarifai-session)))))
 
 
 (defun extract-image-links (tweet)
@@ -154,11 +171,16 @@
                                  :resource-base-url *resource-base-url*))
           (clarifai-session (make-instance 'clarifai:session
                                            :client-id clarifai-id
-                                           :client-secret clarifai-secret)))
-      (wait (login session)
-        (format t "Login successful~%")
-        (do-search session
-                   `(("count" . ,*tweet-count*)
-                     ("result_type" . "recent"))
-                   "貓 OR 猫 OR 喵 filter:images"
-                   nil nil clarifai-session)))))
+                                           :client-secret clarifai-secret))
+          (login-successful t))
+      (wait (catcher (login session)
+              (t (e)
+                (format t "Login failed: ~A~%" e)
+                (setf login-successful nil)))
+        (when login-successful
+          (format t "Login successful~%")
+          (do-search session
+                     `(("count" . ,*tweet-count*)
+                       ("result_type" . "recent"))
+                     "貓 OR 猫 OR 喵 filter:images"
+                     nil nil clarifai-session))))))
